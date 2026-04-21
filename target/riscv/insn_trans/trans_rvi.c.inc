@@ -1714,3 +1714,49 @@ static bool trans_gemm(DisasContext *ctx, arg_gemm *a)
 
     return true;
 }
+
+static bool trans_vadd(DisasContext *ctx, arg_vadd *a)
+{
+    TCGv src1 = get_gpr(ctx, a->rs1, EXT_NONE);
+    TCGv src2 = get_gpr(ctx, a->rs2, EXT_NONE);
+    TCGv dst = get_gpr(ctx, a->rd, EXT_NONE);
+
+    TCGv i = tcg_temp_new();
+
+    TCGv src1_addr = tcg_temp_new();
+    TCGv src2_addr = tcg_temp_new();
+    TCGv dst_addr = tcg_temp_new();
+
+    TCGv val1 = tcg_temp_new();
+    TCGv val2 = tcg_temp_new();
+
+    TCGLabel *L_i_done = gen_new_label();
+    TCGLabel *L_i_body = gen_new_label();
+
+    tcg_gen_mov_tl(src1_addr, src1);
+    tcg_gen_mov_tl(src2_addr, src2);
+    tcg_gen_mov_tl(dst_addr, dst);
+    tcg_gen_movi_tl(i, 0);
+
+    MemOp memop = MO_TESL;
+
+    decode_save_opc(ctx, 0);
+
+    gen_set_label(L_i_body);
+    tcg_gen_brcondi_tl(TCG_COND_GEU, i, 16, L_i_done);
+
+        tcg_gen_qemu_ld_tl(val1, src1_addr, ctx->mem_idx, memop);
+        tcg_gen_qemu_ld_tl(val2, src2_addr, ctx->mem_idx, memop);
+        tcg_gen_add_tl(val1, val1, val2);
+        tcg_gen_qemu_st_tl(val1, dst_addr, ctx->mem_idx, memop);
+
+        tcg_gen_addi_tl(src1_addr, src1_addr, 4);
+        tcg_gen_addi_tl(src2_addr, src2_addr, 4);
+        tcg_gen_addi_tl(dst_addr, dst_addr, 4);
+        tcg_gen_addi_tl(i, i, 1);
+
+    tcg_gen_br(L_i_body);
+    gen_set_label(L_i_done);
+
+    return true;
+}
