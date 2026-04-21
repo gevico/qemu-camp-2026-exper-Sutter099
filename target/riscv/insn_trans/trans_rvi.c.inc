@@ -1436,3 +1436,46 @@ static bool trans_expand(DisasContext *ctx, arg_crush *a)
 
     return true;
 }
+
+static bool trans_vdot(DisasContext *ctx, arg_vdot *a)
+{
+    TCGv src1 = get_gpr(ctx, a->rs1, EXT_NONE);
+    TCGv src2 = get_gpr(ctx, a->rs2, EXT_NONE);
+
+    TCGv i = tcg_temp_new();
+    TCGv_i64 acc = tcg_temp_new_i64();
+    TCGv_i64 mul = tcg_temp_new_i64();
+    TCGv_i64 n1 = tcg_temp_new_i64();
+    TCGv_i64 n2 = tcg_temp_new_i64();
+
+    TCGv src1_addr = tcg_temp_new();
+    TCGv src2_addr = tcg_temp_new();
+
+    TCGLabel *L_i_body = gen_new_label();
+
+    MemOp memop = MO_UL;
+
+    tcg_gen_movi_tl(i, 0);
+    tcg_gen_mov_tl(src1_addr, src1);
+    tcg_gen_mov_tl(src2_addr, src2);
+    tcg_gen_movi_i64(acc, 0);
+
+    decode_save_opc(ctx, 0);
+
+    gen_set_label(L_i_body);
+
+        tcg_gen_qemu_ld_i64(n1, src1_addr, ctx->mem_idx, memop);
+        tcg_gen_qemu_ld_i64(n2, src2_addr, ctx->mem_idx, memop);
+        tcg_gen_mul_i64(mul, n1, n2);
+        tcg_gen_add_i64(acc, acc, mul);
+
+        tcg_gen_addi_tl(src1_addr, src1_addr, 4);
+        tcg_gen_addi_tl(src2_addr, src2_addr, 4);
+        tcg_gen_addi_tl(i, i, 1);
+
+    tcg_gen_brcondi_tl(TCG_COND_LTU, i, 16, L_i_body);
+
+    gen_set_gpr(ctx, a->rd, acc);
+
+    return true;
+}
