@@ -781,3 +781,20 @@ done:
 }
 
 #endif /* !CONFIG_USER_ONLY */
+
+void helper_sort(CPURISCVState *env, target_ulong src, target_ulong n_total, target_ulong n_sort)
+{
+    (void)n_total;
+
+    for (target_ulong i = 0; i < n_sort; ++i) {
+        for (target_ulong j = 0; j < n_sort - i - 1; ++j) {
+            int32_t a = cpu_ldl_data_ra(env, src + j * sizeof(int32_t), GETPC());
+            int32_t b = cpu_ldl_data_ra(env, src + (j + 1) * sizeof(int32_t), GETPC());
+
+            if (a > b) {
+                cpu_stl_data_ra(env, src + j * sizeof(int32_t), b, GETPC());
+                cpu_stl_data_ra(env, src + (j + 1) * sizeof(int32_t), a, GETPC());
+            }
+        }
+    }
+}

@@ -1319,3 +1319,14 @@ static bool trans_dma(DisasContext *ctx, arg_dma *a)
 
     return true;
 }
+
+static bool trans_sort(DisasContext *ctx, arg_sort *a)
+{
+    TCGv src = get_gpr(ctx, a->rs1, EXT_NONE);
+    TCGv n_total = get_gpr(ctx, a->rs2, EXT_NONE);
+    TCGv n_sort = get_gpr(ctx, a->rd, EXT_NONE);
+
+    gen_helper_sort(tcg_env, src, n_total, n_sort);
+
+    return true;
+}
