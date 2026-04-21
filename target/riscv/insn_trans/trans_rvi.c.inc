@@ -1614,3 +1614,103 @@ static bool trans_vmax(DisasContext *ctx, arg_vmax *a)
 
     return true;
 }
+
+static bool trans_gemm(DisasContext *ctx, arg_gemm *a)
+{
+    TCGv src1 = get_gpr(ctx, a->rs1, EXT_NONE);
+    TCGv src2 = get_gpr(ctx, a->rs2, EXT_NONE);
+    TCGv dst = get_gpr(ctx, a->rd, EXT_NONE);
+
+    TCGv i = tcg_temp_new();
+    TCGv j = tcg_temp_new();
+    TCGv k = tcg_temp_new();
+    TCGv acc = tcg_temp_new();
+    TCGv val1 = tcg_temp_new();
+    TCGv val2 = tcg_temp_new();
+    TCGv n = tcg_temp_new();
+
+    TCGv src1_addr = tcg_temp_new();
+    TCGv src2_addr = tcg_temp_new();
+    TCGv dst_addr = tcg_temp_new();
+
+    TCGv idx1 = tcg_temp_new();
+    TCGv idx2 = tcg_temp_new();
+    TCGv idx_dst = tcg_temp_new();
+
+    TCGLabel *L_i_done = gen_new_label();
+    TCGLabel *L_j_done = gen_new_label();
+    TCGLabel *L_k_done = gen_new_label();
+    TCGLabel *L_i_body = gen_new_label();
+    TCGLabel *L_j_body = gen_new_label();
+    TCGLabel *L_k_body = gen_new_label();
+
+    MemOp memop = MO_TESL;
+
+    tcg_gen_movi_tl(idx1, 0);
+    tcg_gen_movi_tl(idx2, 0);
+    tcg_gen_movi_tl(idx_dst, 0);
+    tcg_gen_movi_tl(n, 4);
+    tcg_gen_mov_tl(src1_addr, src1);
+    tcg_gen_mov_tl(src2_addr, src2);
+    tcg_gen_mov_tl(dst_addr, dst);
+
+    decode_save_opc(ctx, 0);
+
+    tcg_gen_movi_tl(i, 0);
+
+    gen_set_label(L_i_body);
+    tcg_gen_brcond_tl(TCG_COND_GEU, i, n, L_i_done);
+
+        tcg_gen_movi_tl(j, 0);
+
+        gen_set_label(L_j_body);
+        tcg_gen_brcond_tl(TCG_COND_GEU, j, n, L_j_done);
+
+            tcg_gen_movi_tl(acc, 0);
+            tcg_gen_movi_tl(k, 0);
+
+            gen_set_label(L_k_body);
+            tcg_gen_brcond_tl(TCG_COND_GEU, k, n, L_k_done);
+
+                // src1: i * n + k
+                // src2: k * n + j
+                tcg_gen_mul_tl(idx1, i, n);
+                tcg_gen_add_tl(idx1, idx1, k);
+                tcg_gen_muli_tl(idx1, idx1, 4);
+                tcg_gen_add_tl(src1_addr, src1, idx1);
+
+                tcg_gen_mul_tl(idx2, k, n);
+                tcg_gen_add_tl(idx2, idx2, j);
+                tcg_gen_muli_tl(idx2, idx2, 4);
+                tcg_gen_add_tl(src2_addr, src2, idx2);
+
+                tcg_gen_qemu_ld_tl(val1, src1_addr, ctx->mem_idx, memop);
+                tcg_gen_qemu_ld_tl(val2, src2_addr, ctx->mem_idx, memop);
+
+                tcg_gen_mul_tl(val1, val1, val2);
+                tcg_gen_add_tl(acc, acc, val1);
+
+                tcg_gen_addi_tl(k, k, 1);
+
+            tcg_gen_br(L_k_body);
+            gen_set_label(L_k_done);
+
+            tcg_gen_mul_tl(idx_dst, i, n);
+            tcg_gen_add_tl(idx_dst, idx_dst, j);
+            tcg_gen_muli_tl(idx_dst, idx_dst, 4);
+            tcg_gen_add_tl(dst_addr, dst, idx_dst);
+            tcg_gen_qemu_st_tl(acc, dst_addr, ctx->mem_idx, memop);
+
+            tcg_gen_addi_tl(j, j, 1);
+
+
+        tcg_gen_br(L_j_body);
+        gen_set_label(L_j_done);
+
+        tcg_gen_addi_tl(i, i, 1);
+
+    tcg_gen_br(L_i_body);
+    gen_set_label(L_i_done);
+
+    return true;
+}
