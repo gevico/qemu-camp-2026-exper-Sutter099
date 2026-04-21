@@ -1330,3 +1330,63 @@ static bool trans_sort(DisasContext *ctx, arg_sort *a)
 
     return true;
 }
+
+static bool trans_crush(DisasContext *ctx, arg_crush *a)
+{
+    TCGv src = get_gpr(ctx, a->rs1, EXT_NONE);
+    TCGv dst = get_gpr(ctx, a->rd, EXT_NONE);
+    TCGv n = get_gpr(ctx, a->rs2, EXT_NONE);
+
+    TCGv low = tcg_temp_new();
+    TCGv high = tcg_temp_new();
+    TCGv i = tcg_temp_new();
+    TCGv n_compare = tcg_temp_new();
+    TCGv n_odd = tcg_temp_new();
+
+    TCGv src_addr = tcg_temp_new();
+    TCGv dst_addr = tcg_temp_new();
+
+    TCGLabel *L_i_cond = gen_new_label();
+    TCGLabel *L_i_body = gen_new_label();
+    TCGLabel *L_done = gen_new_label();
+
+    MemOp memop = MO_UB;
+
+    tcg_gen_movi_tl(i, 0);
+    tcg_gen_shri_tl(n_compare, n, 1);
+    tcg_gen_andi_tl(n_odd, n, 1);
+    tcg_gen_mov_tl(src_addr, src);
+    tcg_gen_mov_tl(dst_addr, dst);
+
+    decode_save_opc(ctx, 0);
+
+    tcg_gen_br(L_i_cond);
+    gen_set_label(L_i_body);
+
+        tcg_gen_qemu_ld_tl(low, src_addr, ctx->mem_idx, memop);
+        tcg_gen_addi_tl(src_addr, src_addr, 1);
+        tcg_gen_qemu_ld_tl(high, src_addr, ctx->mem_idx, memop);
+
+        tcg_gen_andi_tl(low, low, 0xf);
+        tcg_gen_shli_tl(high, high, 4);
+
+        tcg_gen_or_tl(low, low, high);
+        tcg_gen_qemu_st_tl(low, dst_addr, ctx->mem_idx, memop);
+
+        tcg_gen_addi_tl(dst_addr, dst_addr, 1);
+        tcg_gen_addi_tl(src_addr, src_addr, 1);
+        tcg_gen_addi_tl(i, i, 1);
+
+    gen_set_label(L_i_cond);
+    tcg_gen_brcond_tl(TCG_COND_LTU, i, n_compare, L_i_body);
+
+    tcg_gen_brcondi_tl(TCG_COND_EQ, n_odd, 0, L_done);
+
+    tcg_gen_qemu_ld_tl(low, src_addr, ctx->mem_idx, memop);
+    tcg_gen_andi_tl(low, low, 0xf);
+    tcg_gen_qemu_st_tl(low, dst_addr, ctx->mem_idx, memop);
+
+    gen_set_label(L_done);
+
+    return true;
+}
