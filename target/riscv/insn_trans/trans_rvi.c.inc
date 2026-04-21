@@ -1223,3 +1223,99 @@ static bool trans_csrrci(DisasContext *ctx, arg_csrrci * a)
                              ctx->zero, ctx->zero, mask, ctx->zero);
     }
 }
+
+static bool trans_dma(DisasContext *ctx, arg_dma *a)
+{
+    TCGv src_base = get_gpr(ctx, a->rs1, EXT_NONE);
+    TCGv dst_base = get_gpr(ctx, a->rd, EXT_NONE);
+    TCGv sel = get_gpr(ctx, a->rs2, EXT_NONE);
+
+    TCGv N = tcg_temp_new();
+    TCGv i = tcg_temp_new();
+    TCGv j = tcg_temp_new();
+
+    TCGv t0 = tcg_temp_new();
+    TCGv t1 = tcg_temp_new();
+    TCGv src_idx = tcg_temp_new();
+    TCGv dst_idx = tcg_temp_new();
+    TCGv src_addr = tcg_temp_new();
+    TCGv dst_addr = tcg_temp_new();
+    TCGv val = tcg_temp_new();
+
+    TCGLabel *L_set16 = gen_new_label();
+    TCGLabel *L_set32 = gen_new_label();
+    TCGLabel *L_n_done = gen_new_label();
+
+    TCGLabel *L_i_cond = gen_new_label();
+    TCGLabel *L_i_body = gen_new_label();
+    TCGLabel *L_i_inc = gen_new_label();
+    TCGLabel *L_end = gen_new_label();
+
+    TCGLabel *L_j_cond = gen_new_label();
+    TCGLabel *L_j_body = gen_new_label();
+    TCGLabel *L_j_inc = gen_new_label();
+
+    MemOp memop = MO_UL | mo_endian(ctx);
+
+    decode_save_opc(ctx, 0);
+
+    /* N = 8/16/32 */
+    tcg_gen_movi_tl(N, 8);
+    tcg_gen_brcondi_tl(TCG_COND_EQ, sel, 1, L_set16);
+    tcg_gen_brcondi_tl(TCG_COND_EQ, sel, 2, L_set32);
+    tcg_gen_br(L_n_done);
+
+    /* N == 16 */
+    gen_set_label(L_set16);
+    tcg_gen_movi_tl(N, 16);
+    tcg_gen_br(L_n_done);
+
+    /* N == 32 */
+    gen_set_label(L_set32);
+    tcg_gen_movi_tl(N, 32);
+    tcg_gen_br(L_n_done);
+
+    gen_set_label(L_n_done);
+
+    tcg_gen_movi_tl(i, 0);
+    tcg_gen_br(L_i_cond);
+
+    gen_set_label(L_i_body);
+    tcg_gen_movi_tl(j, 0);
+    tcg_gen_br(L_j_cond);
+
+    gen_set_label(L_j_body);
+    /* src_idx = i * N + j */
+    tcg_gen_mul_tl(src_idx, i, N);
+    tcg_gen_add_tl(src_idx, src_idx, j);
+
+        /* dst_idx = j * N + i */
+        tcg_gen_mul_tl(dst_idx, j, N);
+        tcg_gen_add_tl(dst_idx, dst_idx, i);
+
+        /* sizeof FP32 == 4 byte */
+        tcg_gen_shli_tl(t0, src_idx, 2);
+        tcg_gen_shli_tl(t1, dst_idx, 2);
+
+        tcg_gen_add_tl(src_addr, src_base, t0);
+        tcg_gen_add_tl(dst_addr, dst_base, t1);
+
+        tcg_gen_qemu_ld_tl(val, src_addr, ctx->mem_idx, memop);
+        tcg_gen_qemu_st_tl(val, dst_addr, ctx->mem_idx, memop);
+
+        gen_set_label(L_j_inc);
+        tcg_gen_addi_tl(j, j, 1);
+
+        gen_set_label(L_j_cond);
+        tcg_gen_brcond_tl(TCG_COND_LTU, j, N, L_j_body);
+
+    gen_set_label(L_i_inc);
+    tcg_gen_addi_tl(i, i, 1);
+
+    gen_set_label(L_i_cond);
+    tcg_gen_brcond_tl(TCG_COND_LTU, i, N, L_i_body);
+
+    gen_set_label(L_end);
+
+    return true;
+}
