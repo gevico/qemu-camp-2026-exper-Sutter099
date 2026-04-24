@@ -34,7 +34,7 @@ static void update_state(G233GPIOState *s)
 {
     uint32_t prev_in = s->in;
     uint32_t output_mask = s->out & s->dir;
-    uint32_t input_mask = ~s->dir;
+    uint32_t input_mask = s->in_val & ~s->dir;
     uint32_t current_in = output_mask | input_mask;
     uint32_t rising = ~prev_in & current_in;
     uint32_t falling = prev_in & ~current_in;
@@ -42,7 +42,6 @@ static void update_state(G233GPIOState *s)
     uint32_t level_mask = s->trig;
     uint32_t edge_pending;
     uint32_t level_pending;
-    uint32_t pin;
 
     s->in = current_in;
 
@@ -58,14 +57,7 @@ static void update_state(G233GPIOState *s)
 
     update_output(s);
 
-    for (int i = 0; i < s->ngpio; i++) {
-        pin = 1U << i;
-
-        if (s->ie & s->is & pin) {
-            qemu_set_irq(s->irq, 1);
-            break;
-        }
-    }
+    qemu_set_irq(s->irq, (s->ie & s->is) != 0);
 }
 
 static uint64_t g233_gpio_read(void *opaque, hwaddr offset, unsigned int size)
@@ -159,6 +151,12 @@ static void g233_gpio_set(void *opaque, int line, int value)
 
     assert(line >= 0 && line < G233_GPIO_PINS);
 
+    if (value) {
+        s->in_val |= (1U << line);
+    } else {
+        s->in_val &= ~(1U << line);
+    }
+
     update_state(s);
 }
 
@@ -169,6 +167,7 @@ static void g233_gpio_reset(DeviceState *dev)
     s->dir = 0;
     s->out = 0;
     s->in = 0;
+    s->in_val = 0;
     s->ie = 0;
     s->is = 0;
     s->trig = 0;
@@ -183,6 +182,7 @@ static const VMStateDescription vmstate_g233_gpio = {
         VMSTATE_UINT32(dir, G233GPIOState),
         VMSTATE_UINT32(out, G233GPIOState),
         VMSTATE_UINT32(in, G233GPIOState),
+        VMSTATE_UINT32(in_val, G233GPIOState),
         VMSTATE_UINT32(ie, G233GPIOState),
         VMSTATE_UINT32(is, G233GPIOState),
         VMSTATE_UINT32(trig, G233GPIOState),

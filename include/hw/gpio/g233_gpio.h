@@ -15,7 +15,6 @@
 #ifndef G233_GPIO_H
 #define G233_GPIO_H
 
-#include "qemu/osdep.h"
 #include "hw/core/sysbus.h"
 #include "qom/object.h"
 
@@ -47,6 +46,7 @@ struct G233GPIOState {
     uint32_t dir;
     uint32_t out;
     uint32_t in;
+    uint32_t in_val; /* cache input value */
     uint32_t ie;
     uint32_t is;
     uint32_t trig;

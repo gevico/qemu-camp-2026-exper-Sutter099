@@ -1030,7 +1030,6 @@ static void create_fdt_gpio(RISCVG233State *s, uint32_t irq_virtio_phandle)
     if (s->aia_type == G233_AIA_TYPE_NONE) {
         qemu_fdt_setprop_cell(ms->fdt, name, "interrupts", GPIO_IRQ);
     } else {
-        // INFO: why
         qemu_fdt_setprop_cells(ms->fdt, name, "interrupts", GPIO_IRQ, 0x4);
     }
 }
