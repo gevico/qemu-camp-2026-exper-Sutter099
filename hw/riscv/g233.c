@@ -56,6 +56,7 @@
 #include "hw/pci-host/gpex.h"
 #include "hw/display/ramfb.h"
 #include "hw/acpi/aml-build.h"
+#include "hw/gpio/g233_gpio.h"
 #include "qapi/qapi-visit-common.h"
 #include "hw/virtio/virtio-iommu.h"
 #include "hw/uefi/var-service-api.h"
@@ -95,6 +96,7 @@ static const MemMapEntry virt_memmap[] = {
     [VIRT_APLIC_S] =      {  0xd000000, APLIC_SIZE(VIRT_CPUS_MAX) },
     [VIRT_UART0] =        { 0x10000000,         0x100 },
     [VIRT_VIRTIO] =       { 0x10001000,        0x1000 },
+    [VIRT_GPIO] =         { 0x10012000,         0x100 },
     [VIRT_FW_CFG] =       { 0x10100000,          0x18 },
     [VIRT_FLASH] =        { 0x20000000,     0x4000000 },
     [VIRT_IMSIC_M] =      { 0x24000000, VIRT_IMSIC_MAX_SIZE },
@@ -1011,6 +1013,28 @@ static void create_fdt_rtc(RISCVG233State *s,
     }
 }
 
+static void create_fdt_gpio(RISCVG233State *s, uint32_t irq_virtio_phandle)
+{
+    hwaddr gpio_base = s->memmap[VIRT_GPIO].base;
+    uint64_t size = s->memmap[VIRT_GPIO].size;
+    MachineState *ms = MACHINE(s);
+    g_autofree char *name = NULL;
+
+    name = g_strdup_printf("/soc/gpio@%"HWADDR_PRIx, gpio_base);
+
+    qemu_fdt_add_subnode(ms->fdt, name);
+    qemu_fdt_setprop_string(ms->fdt, name, "compatible", "gpio,mmio");
+    qemu_fdt_setprop_sized_cells(ms->fdt, name, "reg", 2, gpio_base, 2, size);
+    qemu_fdt_setprop_cell(ms->fdt, name, "interrupt-parent",
+        irq_virtio_phandle);
+    if (s->aia_type == G233_AIA_TYPE_NONE) {
+        qemu_fdt_setprop_cell(ms->fdt, name, "interrupts", GPIO_IRQ);
+    } else {
+        // INFO: why
+        qemu_fdt_setprop_cells(ms->fdt, name, "interrupts", GPIO_IRQ, 0x4);
+    }
+}
+
 static void create_fdt_flash(RISCVG233State *s)
 {
     MachineState *ms = MACHINE(s);
@@ -1158,6 +1182,8 @@ static void finalize_fdt(RISCVG233State *s)
     create_fdt_uart(s, irq_mmio_phandle);
 
     create_fdt_rtc(s, irq_mmio_phandle);
+
+    create_fdt_gpio(s, irq_mmio_phandle);
 }
 
 static void create_fdt(RISCVG233State *s)
@@ -1714,6 +1740,9 @@ static void virt_machine_init(MachineState *machine)
 
     sysbus_create_simple("goldfish_rtc", s->memmap[VIRT_RTC].base,
         qdev_get_gpio_in(mmio_irqchip, RTC_IRQ));
+
+    sysbus_create_simple("g233_gpio", s->memmap[VIRT_GPIO].base,
+        qdev_get_gpio_in(mmio_irqchip, GPIO_IRQ));
 
     for (i = 0; i < ARRAY_SIZE(s->flash); i++) {
         /* Map legacy -drive if=pflash to machine properties */
