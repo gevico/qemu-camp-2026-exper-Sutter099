@@ -146,6 +146,8 @@ system_ss.add(when: 'CONFIG_ASPEED_SOC', if_true: files(
   'aspeed_peci.c',
   'aspeed_sli.c'))
 
+system_ss.add(when: 'CONFIG_G233_PWM', if_true: files('g233_pwm.c'))
+
 system_ss.add(when: 'CONFIG_MSF2', if_true: files('msf2-sysreg.c'))
 system_ss.add(when: 'CONFIG_NRF51_SOC', if_true: files('nrf51_rng.c'))
 

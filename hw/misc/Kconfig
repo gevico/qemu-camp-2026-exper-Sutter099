@@ -262,4 +262,7 @@ config IOSB
 config XLNX_VERSAL_TRNG
     bool
 
+config G233_PWM
+    bool
+
 source macio/Kconfig
