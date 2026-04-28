@@ -3,9 +3,9 @@
  *
  * Copyright 2026 Ze Huang
  *
- * Based on aspeed_pwm.c:
- *
- * Copyright (C) 2017-2021 IBM Corp.
+ * Based on sifive_pwm.c:
+ * Copyright (c) 2020 Western Digital
+ * Author:  Alistair Francis <alistair.francis@wdc.com>
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -57,6 +57,8 @@ struct G233PWMReg {
     uint32_t period;
     uint32_t duty;
     uint32_t cnt;
+
+    uint64_t cached_time_ns;
 };
 
 struct G233PWMState {
@@ -71,49 +73,64 @@ struct G233PWMState {
     uint64_t freq_hz;
 };
 
-// static void update_state(void *opaque)
-// {
-//     // G233PWMState *s = G233_PWM(opaque);
-//
-//     // TODO:
-//     // 配置通道周期：写 PWM_CHn_PERIOD。
-//     // 配置占空比：写 PWM_CHn_DUTY（值须 <= PERIOD）。
-//     // 按需配置极性与中断：写 PWM_CHn_CTRL（POL、INTIE）。
-//     // 启动通道：置位 PWM_CHn_CTRL.EN。
-//     // 周期完成中断处理：读 PWM_GLB 确认哪些通道完成，向对应 DONE 位写 1 清除。
-//
-//
-// }
-
-static inline uint64_t g233_pwm_ticks_to_ns(G233PWMState *s,
-                                            uint64_t ticks)
+static inline uint64_t ticks_to_ns(G233PWMState *s, uint64_t ticks)
 {
     return muldiv64(ticks, NANOSECONDS_PER_SECOND, s->freq_hz);
 }
 
-static void g233_pwm_set_alarms(G233PWMState *s)
+static inline uint64_t ns_to_ticks(G233PWMState *s, uint64_t ns)
 {
-    uint64_t now_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
-    uint64_t count_ns, time_to_fire, offset = 0;
-    int i;
+    return muldiv64(ns, s->freq_hz, NANOSECONDS_PER_SECOND);
+}
 
-    for (i = 0; i < G233_PWM_CHANS; ++i) {
-        count_ns = g233_pwm_ticks_to_ns(s, s->ch_regs[i].cnt);
+/* only get cnt num, do not trigger timer */
+static inline uint32_t g233_pwm_get_cnt(G233PWMState *s, int ch)
+{
+    struct G233PWMReg *reg = &s->ch_regs[ch];
+    uint64_t now_ns, elapsed_ns, elapsed_ticks;
 
-        /* if not enabled and do not reach trigger time, never */
-        time_to_fire = 0xFFFFFFFFFFFFFF;
+    if (!(reg->ctrl & PWM_EN))
+        return reg->cnt;
+    if (reg->period == 0)
+        return 0;
 
-        /* trigger immeditately */
-        if (count_ns >= now_ns) {
-            // TODO: trigger int
-            time_to_fire = now_ns + 1;
+    now_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    elapsed_ns = now_ns - reg->cached_time_ns;
+    elapsed_ticks = ns_to_ticks(s, elapsed_ns);
 
-        /* schedule a trigger */
-        } else if (s->ch_regs[i].ctrl & PWM_EN) {
-            time_to_fire = now_ns + offset;
-        }
+    return (reg->cnt + elapsed_ticks) % reg->period;
+}
 
-        timer_mod(&s->timer[i], time_to_fire);
+static void g233_pwm_update_channel(G233PWMState *s, int ch)
+{
+    struct G233PWMReg *reg = &s->ch_regs[ch];
+    uint32_t ticks_to_end;
+    uint64_t expire_time;
+
+    if (!(reg->ctrl & PWM_EN) || (reg->period <= 0)) {
+        timer_del(&s->timer[ch]);
+        return;
+    }
+
+    reg->cached_time_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    ticks_to_end = reg->period - reg->cnt;
+    expire_time = reg->cached_time_ns + ticks_to_ns(s, ticks_to_end);
+
+    timer_mod(&s->timer[ch], expire_time);
+}
+
+static void g233_pwm_interrupt(G233PWMState *s, int ch)
+{
+    struct G233PWMReg *reg = &s->ch_regs[ch];
+
+    s->glb |= (1 << (4 + ch));
+
+    if (reg->ctrl & PWM_INTIE)
+        qemu_irq_raise(s->irq);
+
+    if (reg->ctrl & PWM_EN) {
+        reg->cnt = 0;
+        g233_pwm_update_channel(s, ch);
     }
 }
 
@@ -124,15 +141,23 @@ static uint64_t g233_pwm_read(void *opaque, hwaddr addr,
     uint64_t val = 0;
     uint32_t ch = 0;
 
-    if (addr > G233_GLB_SIZE)
-        ch = (addr - G233_GLB_SIZE) / G233_CH_OFFSET;
+    if (addr == G233_PWM_GLB) {
+        for (int i = 0; i < G233_PWM_CHANS; ++i)
+            if (s->ch_regs[i].ctrl & PWM_EN)
+                s->glb |= (1 << i);
 
+        return s->glb;
+    }
+
+    ch = (addr - G233_GLB_SIZE) / G233_CH_OFFSET;
     addr = addr - G233_GLB_SIZE * ch;
 
+    if (ch >= G233_PWM_CHANS) {
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: Invalid channel %d\n", __func__, ch);
+        return 0;
+    }
+
     switch (addr) {
-    case G233_PWM_GLB:
-        val = s->glb;
-        break;
     case G233_PWM_CH_CTRL:
         val = s->ch_regs[ch].ctrl;
         break;
@@ -143,7 +168,8 @@ static uint64_t g233_pwm_read(void *opaque, hwaddr addr,
         val = s->ch_regs[ch].duty;
         break;
     case G233_PWM_CH_CNT:
-        val = s->ch_regs[ch].cnt;
+        val = g233_pwm_get_cnt(s, ch);
+        s->ch_regs[ch].cnt = val;
         break;
     default:
         qemu_log_mask(LOG_GUEST_ERROR,
@@ -164,37 +190,55 @@ static void g233_pwm_write(void *opaque, hwaddr addr, uint64_t data,
 
     // trace_aspeed_pwm_write(addr, data);
 
-    if (addr > G233_GLB_SIZE)
-        ch = (addr - G233_GLB_SIZE) / G233_CH_OFFSET;
+    if (addr == G233_PWM_GLB) {
+        s->glb &= ~(data & 0xf0);
+        return;
+    }
 
+    ch = (addr - G233_GLB_SIZE) / G233_CH_OFFSET;
     addr = addr - G233_GLB_SIZE * ch;
+
+    if (ch >= G233_PWM_CHANS) {
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: Invalid channel %d\n", __func__, ch);
+        return;
+    }
 
     switch (addr) {
     case G233_PWM_GLB:
         s->glb = data;
         break;
     case G233_PWM_CH_CTRL:
+        uint32_t old_ctrl = s->ch_regs[ch].ctrl;
         s->ch_regs[ch].ctrl = data;
+
+        if ((old_ctrl & PWM_EN) == (data & PWM_EN))
+            break;
+
+        if (data & PWM_EN) {
+            g233_pwm_update_channel(s, ch);
+        } else {
+            s->ch_regs[ch].cnt = g233_pwm_get_cnt(s, ch);
+            timer_del(&s->timer[ch]);
+        }
         break;
     case G233_PWM_CH_PERIOD:
         s->ch_regs[ch].period = data;
+        if (s->ch_regs[ch].ctrl & PWM_EN)
+            g233_pwm_update_channel(s, ch);
         break;
     case G233_PWM_CH_DUTY:
         s->ch_regs[ch].duty = data;
         break;
     case G233_PWM_CH_CNT:
         s->ch_regs[ch].cnt = data;
+        if (s->ch_regs[ch].ctrl & PWM_EN)
+            g233_pwm_update_channel(s, ch);
         break;
     default:
         qemu_log_mask(LOG_GUEST_ERROR,
                       "%s: Out-of-bounds write at offset 0x%" HWADDR_PRIx "\n",
                       __func__, addr);
     }
-
-    // FIX:
-    g233_pwm_set_alarms(s);
-
-    // TODO: update state?
 }
 
 static const MemoryRegionOps g233_pwm_ops = {
@@ -207,11 +251,6 @@ static const MemoryRegionOps g233_pwm_ops = {
     },
 };
 
-static void g233_pwm_interrupt(G233PWMState *s, int num)
-{
-
-}
-
 static void g233_pwm_interrupt_0(void *opaque)
 {
     G233PWMState *s = opaque;
@@ -223,21 +262,21 @@ static void g233_pwm_interrupt_1(void *opaque)
 {
     G233PWMState *s = opaque;
 
-    g233_pwm_interrupt(s, 0);
+    g233_pwm_interrupt(s, 1);
 }
 
 static void g233_pwm_interrupt_2(void *opaque)
 {
     G233PWMState *s = opaque;
 
-    g233_pwm_interrupt(s, 0);
+    g233_pwm_interrupt(s, 2);
 }
 
 static void g233_pwm_interrupt_3(void *opaque)
 {
     G233PWMState *s = opaque;
 
-    g233_pwm_interrupt(s, 0);
+    g233_pwm_interrupt(s, 3);
 }
 
 static void g233_pwm_reset(DeviceState *dev)
@@ -246,6 +285,9 @@ static void g233_pwm_reset(DeviceState *dev)
 
     s->glb = 0;
     memset(s->ch_regs, 0, sizeof(s->ch_regs));
+
+    for (int i = 0; i < G233_PWM_CHANS; ++i)
+        timer_del(&s->timer[i]);
 }
 
 static void g233_pwm_init(Object *obj)
@@ -253,10 +295,12 @@ static void g233_pwm_init(Object *obj)
     G233PWMState *s = G233_PWM(obj);
     SysBusDevice *sbd = SYS_BUS_DEVICE(obj);
 
+    s->freq_hz = 1000000000ULL;
+
     sysbus_init_irq(sbd, &s->irq);
 
     memory_region_init_io(&s->mmio, obj, &g233_pwm_ops, s,
-            TYPE_G233_PWM, 0x100);
+                          TYPE_G233_PWM, 0x100);
 
     sysbus_init_mmio(sbd, &s->mmio);
 }
@@ -284,6 +328,7 @@ static const VMStateDescription vmstate_g233_pwm_reg = {
         VMSTATE_UINT32(period, struct G233PWMReg),
         VMSTATE_UINT32(duty, struct G233PWMReg),
         VMSTATE_UINT32(cnt, struct G233PWMReg),
+        VMSTATE_UINT64(cached_time_ns, struct G233PWMReg),
         VMSTATE_END_OF_LIST(),
     }
 };
