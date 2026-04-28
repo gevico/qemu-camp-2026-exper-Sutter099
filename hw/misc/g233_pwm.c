@@ -186,7 +186,7 @@ static void g233_pwm_write(void *opaque, hwaddr addr, uint64_t data,
                            unsigned int size)
 {
     G233PWMState *s = G233_PWM(opaque);
-    uint32_t ch;
+    uint32_t ch, old_ctrl;
 
     // trace_aspeed_pwm_write(addr, data);
 
@@ -204,11 +204,8 @@ static void g233_pwm_write(void *opaque, hwaddr addr, uint64_t data,
     }
 
     switch (addr) {
-    case G233_PWM_GLB:
-        s->glb = data;
-        break;
     case G233_PWM_CH_CTRL:
-        uint32_t old_ctrl = s->ch_regs[ch].ctrl;
+        old_ctrl = s->ch_regs[ch].ctrl;
         s->ch_regs[ch].ctrl = data;
 
         if ((old_ctrl & PWM_EN) == (data & PWM_EN))
