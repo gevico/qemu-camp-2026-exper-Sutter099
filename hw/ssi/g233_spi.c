@@ -63,6 +63,20 @@ struct G233SPIState {
     uint32_t dr;
 };
 
+static void g233_spi_update_irq(G233SPIState *s)
+{
+    bool txe_irq = (s->cr1 & SPI_CR1_TXEIE) && (s->sr & SPI_SR_TXE);
+    bool rxne_irq = (s->cr1 & SPI_CR1_RXNEIE) && (s->sr & SPI_SR_RXNE);
+    bool err_irq = (s->cr1 & SPI_CR1_ERRIE) && (s->sr & SPI_SR_OVERRUN);
+    bool en = s->cr1 & SPI_CR1_SPE;
+
+    if (en && (txe_irq || rxne_irq || err_irq)) {
+        qemu_set_irq(s->irq, 1);
+    } else {
+        qemu_set_irq(s->irq, 0);
+    }
+}
+
 static uint64_t g233_spi_read(void *opaque, hwaddr offset, unsigned int size)
 {
     G233SPIState *s = G233_SPI(opaque);
@@ -81,6 +95,7 @@ static uint64_t g233_spi_read(void *opaque, hwaddr offset, unsigned int size)
     case SPI_DR:
         r = s->dr;
         s->sr &= ~SPI_SR_RXNE;
+        g233_spi_update_irq(s);
         break;
     default:
         qemu_log_mask(LOG_GUEST_ERROR,
@@ -106,6 +121,7 @@ static void g233_spi_write(void *opaque, hwaddr offset,
         } else if (!(old_val & SPI_CR1_SPE) && (s->cr1 & SPI_CR1_SPE)) {
             qemu_set_irq(s->cs_lines[s->cr2], 0);
         }
+        g233_spi_update_irq(s);
         break;
     case SPI_CR2:
         old_val = s->cr2;
@@ -117,13 +133,19 @@ static void g233_spi_write(void *opaque, hwaddr offset,
         break;
     case SPI_SR:
         s->sr &= ~(value & SPI_SR_OVERRUN);
+        g233_spi_update_irq(s);
         break;
     case SPI_DR:
         if (!(s->cr1 & SPI_CR1_SPE))
             break;
+        if (s->sr & SPI_SR_RXNE) {
+            s->sr |= SPI_SR_OVERRUN;
+            g233_spi_update_irq(s);
+        }
         s->dr = ssi_transfer(s->spi, value & SPI_DR_DATA_MASK);
         s->sr |= SPI_SR_TXE;
         s->sr |= SPI_SR_RXNE;
+        g233_spi_update_irq(s);
         break;
     default:
         qemu_log_mask(LOG_GUEST_ERROR,
@@ -151,6 +173,8 @@ static void g233_spi_reset(DeviceState *dev)
     s->cr2 = 0;
     s->sr = 0x2;
     s->dr = 0;
+
+    g233_spi_update_irq(s);
 }
 
 static const VMStateDescription vmstate_g233_spi = {
