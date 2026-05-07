@@ -1833,9 +1833,14 @@ static void virt_machine_init(MachineState *machine)
 
         flash_dev = qdev_new("w25x16");
         qdev_realize_and_unref(flash_dev, spi_bus, &error_fatal);
-
         flash_cs = qdev_get_gpio_in_named(flash_dev, SSI_GPIO_CS, 0);
         qdev_connect_gpio_out_named(spi_dev, "cs", 0, flash_cs);
+
+        flash_dev = qdev_new("w25x32");
+        qdev_prop_set_uint8(flash_dev, "cs", 1);
+        qdev_realize_and_unref(flash_dev, spi_bus, &error_fatal);
+        flash_cs = qdev_get_gpio_in_named(flash_dev, SSI_GPIO_CS, 0);
+        qdev_connect_gpio_out_named(spi_dev, "cs", 1, flash_cs);
     }
 
     for (i = 0; i < ARRAY_SIZE(s->flash); i++) {
