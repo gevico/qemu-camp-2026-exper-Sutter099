@@ -38,6 +38,7 @@
 #include "hw/riscv/g233.h"
 #include "hw/riscv/boot.h"
 #include "hw/riscv/numa.h"
+#include "hw/ssi/ssi.h"
 #include "kvm/kvm_riscv.h"
 #include "hw/firmware/smbios.h"
 #include "hw/intc/riscv_aclint.h"
@@ -98,6 +99,7 @@ static const MemMapEntry virt_memmap[] = {
     [VIRT_WDT] =          { 0x10010000,         0x100 },
     [VIRT_VIRTIO] =       { 0x10001000,        0x1000 },
     [VIRT_GPIO] =         { 0x10012000,         0x100 },
+    [VIRT_SPI] =          { 0x10018000,         0x100 },
     [VIRT_PWM] =          { 0x10015000,         0x100 },
     [VIRT_FW_CFG] =       { 0x10100000,          0x18 },
     [VIRT_FLASH] =        { 0x20000000,     0x4000000 },
@@ -1078,6 +1080,27 @@ static void create_fdt_gpio(RISCVG233State *s, uint32_t irq_virtio_phandle)
     }
 }
 
+static void create_fdt_spi(RISCVG233State *s, uint32_t irq_virtio_phandle)
+{
+    hwaddr spi_base = s->memmap[VIRT_SPI].base;
+    uint64_t size = s->memmap[VIRT_SPI].size;
+    MachineState *ms = MACHINE(s);
+    g_autofree char *name = NULL;
+
+    name = g_strdup_printf("/soc/spi@%"HWADDR_PRIx, spi_base);
+
+    qemu_fdt_add_subnode(ms->fdt, name);
+    qemu_fdt_setprop_string(ms->fdt, name, "compatible", "spi,mmio");
+    qemu_fdt_setprop_sized_cells(ms->fdt, name, "reg", 2, spi_base, 2, size);
+    qemu_fdt_setprop_cell(ms->fdt, name, "interrupt-parent",
+        irq_virtio_phandle);
+    if (s->aia_type == G233_AIA_TYPE_NONE) {
+        qemu_fdt_setprop_cell(ms->fdt, name, "interrupts", SPI_IRQ);
+    } else {
+        qemu_fdt_setprop_cells(ms->fdt, name, "interrupts", SPI_IRQ, 0x4);
+    }
+}
+
 static void create_fdt_flash(RISCVG233State *s)
 {
     MachineState *ms = MACHINE(s);
@@ -1231,6 +1254,8 @@ static void finalize_fdt(RISCVG233State *s)
     create_fdt_pwm(s, irq_mmio_phandle);
 
     create_fdt_wdt(s, irq_mmio_phandle);
+
+    create_fdt_spi(s, irq_mmio_phandle);
 }
 
 static void create_fdt(RISCVG233State *s)
@@ -1607,9 +1632,10 @@ static void virt_machine_init(MachineState *machine)
     RISCVG233State *s = RISCV_G233_MACHINE(machine);
     MemoryRegion *system_memory = get_system_memory();
     MemoryRegion *mask_rom = g_new(MemoryRegion, 1);
-    DeviceState *mmio_irqchip, *virtio_irqchip, *pcie_irqchip;
+    DeviceState *mmio_irqchip, *virtio_irqchip, *pcie_irqchip, *spi_dev;
     int i, base_hartid, hart_count;
     int socket_count = riscv_socket_count(machine);
+    BusState *spi_bus;
 
     s->memmap = virt_memmap;
 
@@ -1796,6 +1822,21 @@ static void virt_machine_init(MachineState *machine)
 
     sysbus_create_simple("g233_wdt", s->memmap[VIRT_WDT].base,
         qdev_get_gpio_in(mmio_irqchip, WDT_IRQ));
+
+    spi_dev = sysbus_create_simple("g233_spi", s->memmap[VIRT_SPI].base,
+        qdev_get_gpio_in(mmio_irqchip, SPI_IRQ));
+    spi_bus = qdev_get_child_bus(spi_dev, "spi");
+
+    if (spi_bus) {
+        DeviceState *flash_dev;
+        qemu_irq flash_cs;
+
+        flash_dev = qdev_new("w25x16");
+        qdev_realize_and_unref(flash_dev, spi_bus, &error_fatal);
+
+        flash_cs = qdev_get_gpio_in_named(flash_dev, SSI_GPIO_CS, 0);
+        qdev_connect_gpio_out_named(spi_dev, "cs", 0, flash_cs);
+    }
 
     for (i = 0; i < ARRAY_SIZE(s->flash); i++) {
         /* Map legacy -drive if=pflash to machine properties */
